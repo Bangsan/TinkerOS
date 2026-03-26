@@ -368,16 +368,18 @@ U0 EnablePCIComms()
   }
 }
 
+
+MemSet(&comm_ports,0,sizeof(comm_ports));
+
 public U0 CommInit()
 {// Com port base/IRQ init function
   I64 i,next_port=5;
-  MemSet(&comm_ports,0,sizeof(comm_ports));
   comm_ports[1].base=0x3F8;
   comm_ports[2].base=0x2F8;
   comm_ports[3].base=0x3E8;
   comm_ports[4].base=0x2E8;
   next_port=AddPCIComms(next_port);
-  //TODOadd from more sources?
+
   for (i=0; i<MAX_COMM_NUM; i++)
   {
     comm_ports[i].flags=0;
@@ -397,6 +399,7 @@ public U0 CommInit()
     }
   }
 }
+
 // Disable by default for now, user can run if they need/want it.
 // Disabling speeds boot on some systems.
 //CommInit;

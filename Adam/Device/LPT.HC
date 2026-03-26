@@ -18,7 +18,8 @@ class CLpt
 {
   I64   base,
         device,
-        flags;
+        flags,
+        autostrobe;
 };
 
 public CLpt lpt_ports[MAX_LPT_NUM+1];
@@ -42,6 +43,9 @@ I64 AddPCIPP(I64 next_port)
             {
               lpt_ports[cur_port].base=ioport&0xfffffffc;
               cur_port++;
+
+              PCIWriteU16(b,d,f,0x4,PCIReadU16(b,d,f,0x4)|0x1);
+
               if (cur_port>MAX_LPT_NUM)
               {
                 return cur_port;
@@ -54,11 +58,64 @@ I64 AddPCIPP(I64 next_port)
   return cur_port;
 }
 
+public I64 LptSetSPP(I64 port)
+{
+    OutU8(lpt_ports[port].base+OFFSET_LPT_CONTROL,0x1B);
+    lpt_ports[port].autostrobe=0;
+    return 0;
+}
+
+public I64 LptSetEPP(I64 port)
+{
+    OutU8(lpt_ports[port].base+OFFSET_LPT_CONTROL,0x03);
+    lpt_ports[port].autostrobe=0;
+    return 0;
+}
+
+public I64 LptSetECP(I64 port)
+{
+    I64 base=lpt_ports[port].base,cfgB;
+    OutU8(base+OFFSET_LPT_CONTROL,0x0F);
+    lpt_ports[port].autostrobe=0;
+
+  // Configure port
+  OutU8(base+0x402,7<<5); // setup configuration mode 111
+  Sleep(1);
+
+  // Configuration Register B, like Configuration Register A is only available when the ECP Port is in Configuration Mode.
+  // When in this mode, cnfgB resides at Base + 401h. Below is the make-up of the cnfgB Register.
+
+  // Disable RLE compression
+
+  cfgB = InU8(base+0x401);
+  cfgB = cfgB & 0x7f; // disable high bit RLE
+  OutU8(base+0x401, cfgB);
+  Sleep(2);
+
+  if (InU8(base+0x401) != cfgB)
+  {
+    "Failed to configure port, might not be an ECP parallel port or port number might be wrong?\n";
+        return -1;
+  }
+
+  // Exit config, enter ECP mode.
+
+  OutU8(base+0x402,3<<5); // ECP FIFO mode (should auto strobe)
+  Sleep(1);
+  lpt_ports[port].autostrobe=1;
+  return 0;
+}
+
 public U0 LptPutChar(I64 port,U8 b)
 {
 // Write 1 byte to lpt port
   I64 base=lpt_ports[port].base;
   OutU8(base+OFFSET_LPT_DATA,b);
+  if (!lpt_ports[port].autostrobe)
+  {
+    OutU8(base+OFFSET_LPT_CONTROL,0);
+    OutU8(base+OFFSET_LPT_CONTROL,1);
+  }
 }
 
 public U0 LptPutS(I64 port,U8 *st)
@@ -95,6 +152,7 @@ public U0 LptInit()
   for (i=0; i<MAX_LPT_NUM; i++)
   {
     lpt_ports[i].flags=0;
+    lpt_ports[i].autostrobe=0;
   }
 }
 LptInit;

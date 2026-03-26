@@ -19,10 +19,23 @@ doc_ed_warn_overwrite=TRUE;
 doc_ed_warn_already_open=TRUE;
 
 // Misc helper functions
+
+// Try to auto mount drive C.
 U0 AutoHome()
 {
   MountAuto(1);
   Cdd("C:/Home");
+}
+
+// Try to auto mount drive C and do a soft-reboot into it.
+U0 AutoSBC()
+{
+  if (!DrvMounted('C'))
+    AutoHome;
+  if (DrvMounted('C'))
+    if (IsFile("C:/Kernel.BIN.C"))
+      BootRAM("C:/Kernel.BIN.C");
+  "Failed to mount C or find bootable kernel!\n";
 }
 
 // Experimental FM 801 sound card OPL support

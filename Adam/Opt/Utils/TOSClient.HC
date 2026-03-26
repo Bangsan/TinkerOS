@@ -29,8 +29,11 @@
 #define CMD_HOST_EXEC 15
 #define CMD_URL_GET_TEXT 16
 
+#define ACK_WAIT_DELAY_MS 1
+
 public I8 SNAIL_COM=-1;
 public I64 SNAIL_PORT=-1;
+public I64 SNAIL_LPT=-1;
 
 // This is prep for possibly doing TOSClient
 // over network instead of over serial/virtual serial
@@ -115,7 +118,7 @@ static U8 ReadByte(I64 timeout_ms=750)
   }
 }
 
-static I8 ReadI8(I64 timeout_ms=750)
+static I8 ReadI8(I64 timeout_ms=500)
 {
   I8 chr;
   F64 timeout_time=tS+ToF64(timeout_ms)/1000.0;
@@ -146,6 +149,77 @@ static U0 ReadBlock(U8* buf, I64 count, I64 timeout_ms=750)
   }
 }
 
+static U8 *MReadBlock(I64 len, I64 timeout_ms=750)
+{
+  U8 *data;
+  if (!len) return 0;
+  data = MAlloc(len+1);
+  if (!data) return 0;
+  try {
+    ReadBlock(data, len, timeout_ms);
+  }
+  catch {
+    Fs->catch_except=TRUE;
+    Free(data);
+    return 0;
+  }
+  data[len]=0;
+  return data;
+}
+
+static I64 ReadRemoteLen(I64 *out_len, I64 timeout_ms=750)
+{
+  I64 lenlen = ReadI8(timeout_ms);
+  if (lenlen > 0)
+  {
+    U8 *tmp = CAlloc(lenlen+1);
+    ReadBlock(tmp, lenlen, timeout_ms);
+    *out_len = Str2I64(tmp);
+    Free(tmp);
+    // Send ACK of expected length
+    ClientPutChar(lenlen);
+    return lenlen;
+  }
+  ClientPutChar(0);
+  return 0;
+}
+
+static I64 ClientPutLenAndStr(U8 *s)
+{
+  I64 res=StrLen(s);
+  ClientPutChar(res);
+  ClientPutS(s);
+  return res;
+}
+
+static I64 ClientPutLenStrAndFree(U8 *s)
+{
+  I64 res=ClientPutLenAndStr(s);
+  Free(s);
+  return res;
+}
+
+static U0 ClientPutCmdAndStr(U8 cmd, U8 *s)
+{
+  ClientPutChar(cmd);
+  ClientPutLenAndStr(s);
+}
+
+static U0 ClientPutCmdLenStrAndFree(U8 cmd, U8 *s)
+{
+  ClientPutChar(cmd);
+  ClientPutLenStrAndFree(s);
+}
+
+static U0 ClientPutCmdWithPayload(U8 cmd, U8 *payload)
+{
+  if (!payload) return;
+  I64 plen = StrLen(payload);
+  U8 *len_str = MStrPrint("%d", plen);
+  ClientPutChar(cmd);
+  ClientPutLenStrAndFree(len_str);
+  ClientPutS(payload);
+}
 
 I64 SocketInit()
 {
@@ -178,7 +252,6 @@ I64 SocketInit()
   "Did you run InitTOSClient; and check if server is running?\n$FG$";
   throw;
 }
-
 
 I64 socket(I64 domain, I64 type)
 {
@@ -246,6 +319,13 @@ Bool ProbeComm()
 {//Search COM ports for TOS server
   I64 i,j;
   U8 tmp_buf[17], tmp_byte;
+
+  if (!comm_ports[1].base)
+  {
+     "You must first call CommInit to initialized COM ports!\n";
+     return FALSE;
+  }
+
   MemSet(tmp_buf,0,17);
   for (i=1; i<=MAX_COMM_NUM; i++)
   {
@@ -321,32 +401,18 @@ public Bool TOSServerCheck()
 public I64 Fget(U8 *filename, U8 *local_name=NULL)
 {//Gets file from remote
   U8 *data, *basename, *zfile;
-  I64 len,lenlen;
+  I64 len;
 
   if (!TOSServerCheck) return -1;
 
-  ClientPutChar(CMD_FILE_SEND);
-  ClientPutChar(StrLen(filename));
-  ClientPutS(filename);
-  lenlen=ReadI8;
-  if (lenlen > 0)
-  {
-    data=CAlloc(lenlen+1);
-    ReadBlock(data,lenlen);
-    len=Str2I64(data);
-    Free(data);
-  }
-  else
+  ClientPutCmdAndStr(CMD_FILE_SEND, filename);
+  if (!ReadRemoteLen(&len))
   {
     "Failed to read file %s (or file size is zero)!\n",filename;
-    ClientPutChar(0);
     return 0;
   }
-  data=MAlloc(len);
-  if (data)
+  if (data = MReadBlock(len))
   {
-    ClientPutChar(lenlen);
-    ReadBlock(data,len);
     "Got file: %s\n"
     , filename;
     if (local_name)
@@ -382,7 +448,7 @@ public I64 Fget(U8 *filename, U8 *local_name=NULL)
   }
   else
   {
-    "Failed to malloc space for file %s!\n",filename;
+    "Failed to get file %s!\n",filename;
     ClientPutChar(0);
     return 0;
   }
@@ -391,7 +457,7 @@ public I64 Fget(U8 *filename, U8 *local_name=NULL)
 public I64 Fput(U8 *filename, U8* remote_name=NULL)
 {//Transfers file to remote
   U8 *data, *len_str;
-  I64 len,lenlen;
+  I64 len,res;
 
   if (!TOSServerCheck) return -1;
 
@@ -409,31 +475,30 @@ public I64 Fput(U8 *filename, U8* remote_name=NULL)
     return 0;
   }
   len_str = MStrPrint("%d",len);
-  lenlen = StrLen(len_str);
   ClientPutChar(CMD_FILE_RECV);
-  ClientPutChar(lenlen);
-  ClientPutS(len_str);
-  Free(len_str);
+  res=ClientPutLenStrAndFree(len_str);
   if (remote_name)
   {
-    lenlen = StrLen(remote_name);
-    ClientPutChar(lenlen);
-    ClientPutS(remote_name);
+    ClientPutLenAndStr(remote_name);
   }
   else
   {
-    lenlen = StrLen(filename);
-    ClientPutChar(lenlen);
-    ClientPutS(filename);
+    ClientPutLenAndStr(filename);
   }
   ClientPutBlk(data,len);
-  if (lenlen == ReadI8)
+
+  Sleep(ACK_WAIT_DELAY_MS);
+
+  if (res = ReadI8)
   {
     "File %s was transferred!\n",filename;
     return len;
   }
   else
+  {
     "File %s was not transferred! An unknown error occurred in transfer!\n",filename;
+  }
+
   Free(data);
   return 0;
 }
@@ -460,25 +525,15 @@ I64 FCmpHash(U8 *filename, U8* remote_name=NULL, Bool silent=TRUE)
     return -1;
   }
   len_str = MStrPrint("32");
-  lenlen = StrLen(len_str);
   ClientPutChar(CMD_CMP_HASH);
-  ClientPutChar(lenlen);
-  ClientPutS(len_str);
-  Free(len_str);
+  ClientPutLenStrAndFree(len_str);
   if (remote_name)
-  {
-    lenlen = StrLen(remote_name);
-    ClientPutChar(lenlen);
-    ClientPutS(remote_name);
-  }
+    ClientPutLenAndStr(remote_name);
   else
-  {
-    lenlen = StrLen(filename);
-    ClientPutChar(lenlen);
-    ClientPutS(filename);
-  }
+    ClientPutLenAndStr(filename);
   ClientPutBlk(data,len);
   Free(data);
+  Sleep(ACK_WAIT_DELAY_MS);
   if (lenlen == ReadI8)
   {
     if (!silent)
@@ -592,40 +647,26 @@ public I64 Dsync(U8 *src_files_find_mask,U8 *remote_dir=NULL, Bool no_mask=TRUE,
 public I64 URLGet(U8 *url, U8 *filename)
 {//Gets URL (raw file) to a file from remote
   U8* data;
-  I64 len,lenlen;
+  I64 len;
 
   if (!TOSServerCheck) return -1;
 
-  ClientPutChar(CMD_URL_GET_RAW);
-  ClientPutChar(StrLen(url));
-  ClientPutS(url);
-  lenlen=ReadI8(2500);
-  if (lenlen > 0)
-  {
-    data=CAlloc(lenlen+1);
-    ReadBlock(data,lenlen,2500);
-    len=Str2I64(data);
-    Free(data);
-  }
-  else
+  ClientPutCmdAndStr(CMD_URL_GET_RAW, url);
+  if (!ReadRemoteLen(&len, 2500))
   {
     "Failed to data (or size is zero)!\n";
-    ClientPutChar(0);
     return 0;
   }
   "Fetching %d bytes from URL\n",len;
-  data=MAlloc(len+1);
-  if (data)
+  if (data = MReadBlock(len+1,2500))
   {
-    ClientPutChar(lenlen);
-    ReadBlock(data,len);
     FileWrite(filename,data,len);
     Free(data);
     return len;
   }
   else
   {
-    "Failed to malloc space for file %s!\n",filename;
+    "Failed to get URL %s!\n",url;
     ClientPutChar(0);
     return 0;
   }
@@ -634,38 +675,24 @@ public I64 URLGet(U8 *url, U8 *filename)
 public U8 *URLGetTextStr(U8 *url)
 {//Gets URL (text only) from remote as string
   U8* data;
-  I64 len,lenlen;
+  I64 len;
 
   if (!TOSServerCheck) return -1;
 
-  ClientPutChar(CMD_URL_GET_TEXT);
-  ClientPutChar(StrLen(url));
-  ClientPutS(url);
-  lenlen=ReadI8(2500);
-  if (lenlen > 0)
-  {
-    data=CAlloc(lenlen+1);
-    ReadBlock(data,lenlen,2500);
-    len=Str2I64(data);
-    Free(data);
-  }
-  else
+  ClientPutCmdAndStr(CMD_URL_GET_TEXT, url);
+  if (!ReadRemoteLen(&len, 2500))
   {
     "Failed to read data (or size is zero)!\n";
-    ClientPutChar(0);
     return 0;
   }
   "Fetching %d bytes from URL\n",len;
-  data=MAlloc(len+1);
-  if (data)
+  if (data = MReadBlock(len+1,2500))
   {
-    ClientPutChar(lenlen);
-    ReadBlock(data,len);
     return data;
   }
   else
   {
-    "Failed to malloc space!\n";
+    "Failed to get URL %s!\n",url;
     ClientPutChar(0);
     return 0;
   }
@@ -674,46 +701,35 @@ public U8 *URLGetTextStr(U8 *url)
 public U0 URLGetText(U8 *url)
 {//Gets URL (text only) and prints result
   U8 *str=URLGetTextStr(url);
-  "%s\n",str;
-  Free(str);
+  if (str)
+  {
+    "%s\n",str;
+    Free(str);
+  }
 }
 
 public I64 Hdir(U8 *dir=".")
 {//List remote directory contents
   U8* data;
-  I64 len,lenlen;
+  I64 len;
 
   if (!TOSServerCheck) return -1;
 
-  ClientPutChar(CMD_HDIR);
-  ClientPutChar(StrLen(dir));
-  ClientPutS(dir);
-  lenlen=ReadI8;
-  if (lenlen > 0)
+  ClientPutCmdAndStr(CMD_HDIR, dir);
+  if (!ReadRemoteLen(&len))
   {
-    data=CAlloc(lenlen+1);
-    ReadBlock(data,lenlen);
-    len=Str2I64(data);
-    Free(data);
-  }
-  else
-  {
-    ClientPutChar(0);
+    "Failed to list host directory!\n";
     return 0;
   }
-  data=MAlloc(len);
-  if (data)
+  if (data = MReadBlock(len))
   {
-    ClientPutChar(lenlen);
-    ReadBlock(data,len);
-    "%s\n"
-    ,data;
+    "%s\n",data;
     Free(data);
     return len;
   }
   else
   {
-    "Failed to malloc space for directory listing!\n";
+    "Directory empty or failed to get host directory listing!\n";
     ClientPutChar(0);
     return 0;
   }
@@ -819,38 +835,25 @@ U0 FGetFileList(U8 *list, I64 strip=0)
 public I64 Dget(U8 *dir=".", I64 strip=0)
 {//Gets directory from remote
   U8* data;
-  I64 len,lenlen;
+  I64 len;
 
   if (!TOSServerCheck) return -1;
 
-  ClientPutChar(CMD_GET_DIR);
-  ClientPutChar(StrLen(dir));
-  ClientPutS(dir);
-  lenlen=ReadI8;
-  if (lenlen > 0)
+  ClientPutCmdAndStr(CMD_GET_DIR, dir);
+  if (!ReadRemoteLen(&len))
   {
-    data=CAlloc(lenlen+1);
-    ReadBlock(data,lenlen);
-    len=Str2I64(data);
-    Free(data);
-  }
-  else
-  {
-    ClientPutChar(0);
+    "Failed to get directory!\n";
     return 0;
   }
-  data=MAlloc(len);
-  if (data)
+  if (data = MReadBlock(len))
   {
-    ClientPutChar(lenlen);
-    ReadBlock(data,len);
     FGetFileList(data,strip);
     Free(data);
     return len;
   }
   else
   {
-    "Failed to malloc space for directory listing!\n";
+    "Directory empty or failed to get directory %s\n",dir;
     ClientPutChar(0);
     return 0;
   }
@@ -859,30 +862,19 @@ public I64 Dget(U8 *dir=".", I64 strip=0)
 public U8 *ClipGetStr()
 {//Get clipboard text from remote as string
   U8 *data;
-  I64 len,lenlen;
+  I64 len;
 
   if (!TOSServerCheck) return 0;
 
   ClientPutChar(CMD_GET_CB_TEXT);
-  lenlen=ReadI8;
-  if (lenlen > 0)
-  {
-    data=CAlloc(lenlen+1);
-    ReadBlock(data,lenlen);
-    len=Str2I64(data);
-    Free(data);
-  }
-  else
+  
+  if (!ReadRemoteLen(&len))
   {
     "Failed to get clipboard text (or size is zero)!\n";
-    ClientPutChar(0);
     return 0;
   }
-  data=MAlloc(len);
-  if (data)
+  if (data = MReadBlock(len))
   {
-    ClientPutChar(lenlen);
-    ReadBlock(data,len);
     return data;
   }
   return 0;
@@ -893,64 +885,41 @@ public U0 ClipGet()
   if (!TOSServerCheck) return;
 
   U8 *clip=ClipGetStr;
-  "%s\n",clip;
-  Free(clip);
+  if (clip)
+  {
+    "%s\n",clip;
+    Free(clip);
+  }
 }
 
 public U0 ClipPutStr(U8 *send_text)
 {//Put text string into clipboard of remote
   if (!TOSServerCheck) return;
 
-  U8 *len_str;
-  I64 lenlen,len=StrLen(send_text);
+  I64 len=StrLen(send_text);
   if (len)
   {
-    len_str = MStrPrint("%d",len);
-    lenlen = StrLen(len_str);
-    ClientPutChar(CMD_SET_CB_TEXT);
-    ClientPutChar(lenlen);
-    ClientPutS(len_str);
-    Free(len_str);
-    ClientPutS(send_text);
+    ClientPutCmdWithPayload(CMD_SET_CB_TEXT, send_text);
   }
 }
 
 public U8 *HExecToStr(U8 *cmd)
 {// Send NON-INTERACTIVE cmd to another PC over serial, execute, return string output
-  U8 *len_str, *data;
-  I64 lenlen,len=StrLen(cmd);
+  U8 *data;
+  I64 len=StrLen(cmd);
 
   if (!TOSServerCheck) return 0;
 
   if (len)
   {
-    len_str = MStrPrint("%d",len);
-    lenlen = StrLen(len_str);
-    ClientPutChar(CMD_HOST_EXEC);
-    ClientPutChar(lenlen);
-    ClientPutS(len_str);
-    Free(len_str);
-    ClientPutS(cmd);
-    lenlen=ReadI8;
-    if (lenlen > 0)
-    {
-      data=CAlloc(lenlen+1);
-      ReadBlock(data,lenlen);
-      len=Str2I64(data);
-      Free(data);
-    }
-    else
+    ClientPutCmdWithPayload(CMD_HOST_EXEC, cmd);
+    if (!ReadRemoteLen(&len))
     {
       "Failed to get result string (or got 0 bytes)!\n";
-      ClientPutChar(0);
       return 0;
     }
-    data=MAlloc(len+1);
-    if (data)
+    if (data = MReadBlock(len+1))
     {
-      ClientPutChar(lenlen);
-      ReadBlock(data,len);
-      data[len]=0;
       return data;
     }
   }

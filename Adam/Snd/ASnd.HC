@@ -346,7 +346,7 @@ public U0 PlayMD(U8 *st, U8 *words=NULL, I64 ch_start=0, I64 ch_end=0, I64 delay
 
 public U0 PlayM(U8 *st,U8 *words=NULL, I64 ch_start=0, I64 ch_end=0)
 {// Multi-channel Play
- PlayMD(st,words=NULL,ch_start,ch_end,0);
+ PlayMD(st,words,ch_start,ch_end,0);
 }
 
 public U0 Play(U8 *st,U8 *words=NULL)

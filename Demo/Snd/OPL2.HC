@@ -274,14 +274,14 @@ U0 SetInst(U8 *instrument, I64 chan=0)
     if (base == 0xC0)
     {
       // Channel feedback/connection register
-      SetRegister(base + c, instrument[i + 1]);
+      SetRegister(base + c, instrument[i]);
     }
     else
     {
       // Operator registers: first 5 bytes -> mod, next 5 -> carrier
       opoff = chan2op[c];
       if (i > 5) opoff = (chan2op[c] + 3);
-      SetRegister(base + opoff, instrument[i + 1]);
+      SetRegister(base + opoff, instrument[i]);
     }
   }
 }
@@ -360,14 +360,13 @@ static U8 opl_inst_mod2[11]= {1,  1, 1,  1,  1, 1,1,  1, 1,  32, 1};
 public U0 U64Inst(U64 inst, I64 chan=0)
 {//Setup instrument registers from a 64-bit number
   I64 i;
-  U8 opl2inst[12];
-  opl2inst[0]=0;
+  U8 opl2inst[11];
   for (i=0; i<11; i++)
   {
-    opl2inst[i+1]=opl_inst_base[i];
-    opl2inst[i+1]+=inst%opl_inst_mod1[i];
+    opl2inst[i]=opl_inst_base[i];
+    opl2inst[i]+=inst%opl_inst_mod1[i];
     inst/=opl_inst_mod1[i];
-    opl2inst[i+1]+=inst%opl_inst_mod2[i];
+    opl2inst[i]+=inst%opl_inst_mod2[i];
     inst/=opl_inst_mod2[i];
   }
   SetInst(opl2inst,chan);
@@ -502,6 +501,8 @@ public U0 OPLSndRst()
   OPLInit;
 }
 
+Bool have_OPL_snd=FALSE;
+
 
 U0 HijackSndSystem()
 {
@@ -520,7 +521,14 @@ U0 HijackSndSystem()
   HijackFunc(&SndRst,&OPLSndRst);
   LBtr(&sys_semas[SEMA_SND],0);
   Mute(0);
+  have_OPL_snd=TRUE;
 }
+
+Bool HaveOPL()
+{
+  return have_OPL_snd;
+}
+
 
 #ifdef ISA_OPL
 U0 EnableISAOPL()
